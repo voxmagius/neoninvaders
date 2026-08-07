@@ -9,7 +9,7 @@
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; touch-action: none; -webkit-tap-highlight-color: transparent; }
 html, body { width: 100%; height: 100%; overflow: hidden; background: #000; font-family: 'Courier New', Courier, monospace; }
-canvas { display: block; position: fixed; top: 0; left: 0; }
+canvas { display: block; position: fixed; top: 0; left: 0; width: 100%; height: 100%; }
 </style>
 </head>
 <body>
@@ -320,14 +320,16 @@ class ShootButton {
 
 class Game {
   constructor() {
+    try {
     this.canvas = document.getElementById('gameCanvas');
     this.ctx = this.canvas.getContext('2d');
-    this.resize();
-    window.addEventListener('resize', () => this.resize());
 
     this.audio = new AudioSystem();
     this.joystick = new VirtualJoystick();
     this.shootBtn = new ShootButton();
+
+    this.resize();
+    window.addEventListener('resize', () => this.resize());
 
     this.state = 'MENU';
     this.lang = localStorage.getItem('neon_lang') || 'en';
@@ -363,12 +365,13 @@ class Game {
     this.lastTime = 0;
     this.loop = this.loop.bind(this);
     requestAnimationFrame(this.loop);
+    } catch(e) { console.error('Game init error:', e); document.body.innerHTML = '<div style="color:#f00;padding:20px;">Error: ' + e.message + '</div>'; }
   }
 
   resize() {
     this.canvas.width = window.innerWidth;
     this.canvas.height = window.innerHeight;
-    this.shootBtn.setPos(this.canvas.width - 80, this.canvas.height - 100);
+    if (this.shootBtn) this.shootBtn.setPos(this.canvas.width - 80, this.canvas.height - 100);
   }
 
   t(key) {
@@ -846,7 +849,7 @@ class Game {
   }
 }
 
-window.onload = () => new Game();
+new Game();
 </script>
 </body>
 </html>
