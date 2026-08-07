@@ -9,12 +9,19 @@
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; touch-action: none; -webkit-tap-highlight-color: transparent; }
 html, body { width: 100%; height: 100%; overflow: hidden; background: #000; font-family: 'Courier New', Courier, monospace; }
-canvas { display: block; position: fixed; top: 0; left: 0; width: 100%; height: 100%; }
+canvas { display: block; position: fixed; top: 0; left: 0; }
 </style>
 </head>
 <body>
 <canvas id="gameCanvas"></canvas>
 <script>
+// Safe localStorage wrapper
+const Storage = {
+  get: (k, d) => { try { return localStorage.getItem(k) || d; } catch(e) { return d; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch(e) {} },
+  getInt: (k, d) => { try { const v = localStorage.getItem(k); return v ? parseInt(v) : d; } catch(e) { return d; } }
+};
+
 const i18n = {
   en: { start: 'START', settings: 'SETTINGS', sound: 'Sound', music: 'Music', language: 'Language', autoFire: 'Auto Fire', resume: 'RESUME', restart: 'RESTART', gameOver: 'GAME OVER', score: 'Score', highScore: 'Best', pause: 'PAUSE', back: 'BACK', lives: 'Lives', level: 'Level' },
   de: { start: 'START', settings: 'EINSTELLUNGEN', sound: 'Sound', music: 'Musik', language: 'Sprache', autoFire: 'Autofeuer', resume: 'FORTSETZEN', restart: 'NEUSTART', gameOver: 'SPIEL VORBEI', score: 'Punkte', highScore: 'Rekord', pause: 'PAUSE', back: 'ZURÜCK', lives: 'Leben', level: 'Level' },
@@ -184,7 +191,7 @@ class Player {
 }
 
 class Bullet {
-  constructor(x, y, isEnemy = false) {
+  constructor(x, y, isEnemy) {
     this.x = x; this.y = y;
     this.speed = isEnemy ? 3 : 9;
     this.isEnemy = isEnemy;
@@ -328,24 +335,24 @@ class ShootButton {
 class Game {
   constructor() {
     this.canvas = document.getElementById('gameCanvas');
+    if (!this.canvas) { document.body.innerHTML = '<div style="color:#f00;padding:20px;">Canvas not found</div>'; return; }
     this.ctx = this.canvas.getContext('2d');
-    this.resize();
-    window.addEventListener('resize', () => this.resize());
+    if (!this.ctx) { document.body.innerHTML = '<div style="color:#f00;padding:20px;">2D context not available</div>'; return; }
 
     this.audio = new AudioSystem();
     this.joystick = new VirtualJoystick();
     this.shootBtn = new ShootButton();
 
     this.state = 'MENU';
-    this.lang = localStorage.getItem('neon_lang') || 'en';
-    this.soundOn = localStorage.getItem('neon_sound') !== 'false';
-    this.musicOn = localStorage.getItem('neon_music') !== 'false';
-    this.autoFireOn = localStorage.getItem('neon_autofire') === 'true';
+    this.lang = Storage.get('neon_lang', 'en');
+    this.soundOn = Storage.get('neon_sound', 'true') !== 'false';
+    this.musicOn = Storage.get('neon_music', 'true') !== 'false';
+    this.autoFireOn = Storage.get('neon_autofire', 'false') === 'true';
     this.audio.soundEnabled = this.soundOn;
     this.audio.musicEnabled = this.musicOn;
 
     this.score = 0;
-    this.highScore = parseInt(localStorage.getItem('neon_high')) || 0;
+    this.highScore = Storage.getInt('neon_high', 0);
     this.level = 1;
 
     this.player = null;
@@ -355,6 +362,9 @@ class Game {
     this.particles = [];
     this.stars = [];
     for (let i = 0; i < 100; i++) this.stars.push(new Star(this.canvas.width, this.canvas.height));
+
+    this.resize();
+    window.addEventListener('resize', () => this.resize());
 
     this.enemyDir = 1;
     this.enemySpeed = 0.5;
@@ -373,9 +383,12 @@ class Game {
   }
 
   resize() {
-    this.canvas.width = window.innerWidth;
-    this.canvas.height = window.innerHeight;
-    this.shootBtn.setPos(this.canvas.width - 80, this.canvas.height - 100);
+    const w = window.innerWidth || document.documentElement.clientWidth || 320;
+    const h = window.innerHeight || document.documentElement.clientHeight || 480;
+    this.canvas.width = w;
+    this.canvas.height = h;
+    this.shootBtn.setPos(w - 80, h - 100);
+    for (let s of this.stars) s.w = w;
   }
 
   t(key) {
@@ -438,7 +451,6 @@ class Game {
       if (e.code === 'Space' || e.code === 'Enter') this.input.shoot = false;
     });
 
-    // Touch handling with proper multi-touch tracking
     this.canvas.addEventListener('touchstart', e => {
       e.preventDefault();
       for (let t of e.changedTouches) {
@@ -453,7 +465,6 @@ class Game {
             this.joystick.start(id, x, y);
           } else if (rightZone) {
             if (!this.shootBtn.start(id, x, y)) {
-              // Fallback: treat as swipe if outside button radius
               if (!this.joystick.active) this.joystick.start(id, x, y);
             }
           } else {
@@ -528,21 +539,21 @@ class Game {
     if (this.settingsSelection === 0) {
       this.soundOn = !this.soundOn;
       this.audio.soundEnabled = this.soundOn;
-      localStorage.setItem('neon_sound', this.soundOn);
+      Storage.set('neon_sound', this.soundOn);
     } else if (this.settingsSelection === 1) {
       this.musicOn = !this.musicOn;
       this.audio.musicEnabled = this.musicOn;
-      localStorage.setItem('neon_music', this.musicOn);
+      Storage.set('neon_music', this.musicOn);
       if (this.musicOn && this.state !== 'MENU' && this.state !== 'SETTINGS') this.audio.startMusic();
       else this.audio.stopMusic();
     } else if (this.settingsSelection === 2) {
       this.autoFireOn = !this.autoFireOn;
-      localStorage.setItem('neon_autofire', this.autoFireOn);
+      Storage.set('neon_autofire', this.autoFireOn);
     } else if (this.settingsSelection === 3) {
       const langs = ['en', 'de', 'ru'];
       const idx = langs.indexOf(this.lang);
       this.lang = langs[(idx + 1) % langs.length];
-      localStorage.setItem('neon_lang', this.lang);
+      Storage.set('neon_lang', this.lang);
     } else if (this.settingsSelection === 4) {
       if (this.state === 'SETTINGS') this.state = 'MENU';
       else if (this.state === 'SETTINGS_PAUSE') this.state = 'PAUSED';
@@ -578,7 +589,8 @@ class Game {
     }
   }
 
-  createExplosion(x, y, color, count = 15) {
+  createExplosion(x, y, color, count) {
+    count = count || 15;
     for (let i = 0; i < count; i++) {
       this.particles.push(new Particle(x, y, color, 5, 30 + Math.random() * 20));
     }
@@ -595,7 +607,7 @@ class Game {
       this.player.update({left: moveLeft, right: moveRight}, this.canvas.width);
 
       if (shoot && this.player.cooldown <= 0) {
-        this.bullets.push(new Bullet(this.player.x, this.player.y - 20));
+        this.bullets.push(new Bullet(this.player.x, this.player.y - 20, false));
         this.player.cooldown = 12;
         this.audio.playShoot();
       }
@@ -646,7 +658,7 @@ class Game {
               this.state = 'GAMEOVER';
               if (this.score > this.highScore) {
                 this.highScore = this.score;
-                localStorage.setItem('neon_high', this.highScore);
+                Storage.set('neon_high', this.highScore);
               }
               this.audio.stopMusic();
             }
@@ -659,7 +671,7 @@ class Game {
           this.state = 'GAMEOVER';
           if (this.score > this.highScore) {
             this.highScore = this.score;
-            localStorage.setItem('neon_high', this.highScore);
+            Storage.set('neon_high', this.highScore);
           }
           this.audio.stopMusic();
         }
@@ -686,7 +698,7 @@ class Game {
     ctx.shadowColor = '#00ffff';
     ctx.strokeRect(x - w/2, y - h/2, w, h);
     ctx.fillStyle = selected ? '#00ffff' : '#888';
-    ctx.font = `bold ${selected ? 22 : 20}px monospace`;
+    ctx.font = 'bold ' + (selected ? 22 : 20) + 'px monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.shadowBlur = selected ? 15 : 0;
@@ -715,15 +727,15 @@ class Game {
       ctx.font = 'bold 18px monospace';
       ctx.textAlign = 'left';
       ctx.shadowBlur = 10; ctx.shadowColor = '#00ffff';
-      ctx.fillText(`${this.t('score')}: ${this.score}`, 20, 40);
-      ctx.fillText(`${this.t('lives')}: ${this.player.lives}`, 20, 65);
-      ctx.fillText(`${this.t('level')}: ${this.level}`, 20, 90);
+      ctx.fillText(this.t('score') + ': ' + this.score, 20, 40);
+      ctx.fillText(this.t('lives') + ': ' + this.player.lives, 20, 65);
+      ctx.fillText(this.t('level') + ': ' + this.level, 20, 90);
 
       ctx.textAlign = 'right';
       ctx.fillStyle = '#ffffff';
       ctx.font = 'bold 24px monospace';
       ctx.shadowBlur = 8; ctx.shadowColor = '#ffffff';
-      ctx.fillText('⏸', W - 25, 40);
+      ctx.fillText(String.fromCharCode(0x23F8), W - 25, 40);
       ctx.restore();
 
       this.joystick.draw(ctx);
@@ -750,7 +762,7 @@ class Game {
     ctx.font = '14px monospace';
     ctx.fillStyle = '#ff00ff';
     ctx.shadowBlur = 15; ctx.shadowColor = '#ff00ff';
-    ctx.fillText('◄ DEFEND THE GALAXY ►', cx, cy - 95);
+    ctx.fillText('< DEFEND THE GALAXY >', cx, cy - 95);
     ctx.restore();
 
     const items = [this.t('start'), this.t('settings')];
@@ -764,7 +776,7 @@ class Game {
     ctx.textAlign = 'center';
     ctx.fillStyle = '#ffff00';
     ctx.shadowBlur = 10; ctx.shadowColor = '#ffff00';
-    ctx.fillText(`${this.t('highScore')}: ${this.highScore}`, cx, cy + 140);
+    ctx.fillText(this.t('highScore') + ': ' + this.highScore, cx, cy + 140);
     ctx.font = '12px monospace';
     ctx.fillStyle = '#666';
     ctx.shadowBlur = 0;
@@ -785,10 +797,10 @@ class Game {
     ctx.restore();
 
     const items = [
-      `${this.t('sound')}: ${this.soundOn ? 'ON' : 'OFF'}`,
-      `${this.t('music')}: ${this.musicOn ? 'ON' : 'OFF'}`,
-      `${this.t('autoFire')}: ${this.autoFireOn ? 'ON' : 'OFF'}`,
-      `${this.t('language')}: ${this.lang.toUpperCase()}`,
+      this.t('sound') + ': ' + (this.soundOn ? 'ON' : 'OFF'),
+      this.t('music') + ': ' + (this.musicOn ? 'ON' : 'OFF'),
+      this.t('autoFire') + ': ' + (this.autoFireOn ? 'ON' : 'OFF'),
+      this.t('language') + ': ' + this.lang.toUpperCase(),
       this.t('back')
     ];
 
@@ -837,14 +849,14 @@ class Game {
     ctx.font = '24px monospace';
     ctx.fillStyle = '#ffffff';
     ctx.shadowBlur = 12; ctx.shadowColor = '#ffffff';
-    ctx.fillText(`${this.t('score')}: ${this.score}`, cx, cy - 30);
-    ctx.fillText(`${this.t('highScore')}: ${this.highScore}`, cx, cy + 10);
+    ctx.fillText(this.t('score') + ': ' + this.score, cx, cy - 30);
+    ctx.fillText(this.t('highScore') + ': ' + this.highScore, cx, cy + 10);
 
     if (this.score >= this.highScore && this.score > 0) {
       ctx.fillStyle = '#ffff00';
       ctx.shadowBlur = 20; ctx.shadowColor = '#ffff00';
       ctx.font = '18px monospace';
-      ctx.fillText('★ NEW RECORD! ★', cx, cy + 45);
+      ctx.fillText('* NEW RECORD! *', cx, cy + 45);
     }
     ctx.restore();
 
@@ -860,7 +872,11 @@ class Game {
   }
 }
 
-new Game();
+try {
+  new Game();
+} catch(e) {
+  document.body.innerHTML = '<div style="color:#f00;padding:20px;font-family:monospace;">Error: ' + e.message + '<br>' + e.stack + '</div>';
+}
 </script>
 </body>
 </html>
