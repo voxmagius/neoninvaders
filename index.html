@@ -1,0 +1,852 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#000000">
+<title>Neon Invaders</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; touch-action: none; -webkit-tap-highlight-color: transparent; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #000; font-family: 'Courier New', Courier, monospace; }
+canvas { display: block; position: fixed; top: 0; left: 0; }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<script>
+const i18n = {
+  en: { start: 'START', settings: 'SETTINGS', sound: 'Sound', music: 'Music', language: 'Language', resume: 'RESUME', restart: 'RESTART', gameOver: 'GAME OVER', score: 'Score', highScore: 'Best', pause: 'PAUSE', back: 'BACK', lives: 'Lives', level: 'Level' },
+  de: { start: 'START', settings: 'EINSTELLUNGEN', sound: 'Sound', music: 'Musik', language: 'Sprache', resume: 'FORTSETZEN', restart: 'NEUSTART', gameOver: 'SPIEL VORBEI', score: 'Punkte', highScore: 'Rekord', pause: 'PAUSE', back: 'ZURÜCK', lives: 'Leben', level: 'Level' },
+  ru: { start: 'СТАРТ', settings: 'НАСТРОЙКИ', sound: 'Звук', music: 'Музыка', language: 'Язык', resume: 'ПРОДОЛЖИТЬ', restart: 'ЗАНОВО', gameOver: 'ИГРА ОКОНЧЕНА', score: 'Очки', highScore: 'Рекорд', pause: 'ПАУЗА', back: 'НАЗАД', lives: 'Жизни', level: 'Уровень' }
+};
+
+class AudioSystem {
+  constructor() {
+    this.ctx = null;
+    this.soundEnabled = true;
+    this.musicEnabled = true;
+    this.musicOsc = null;
+    this.musicGain = null;
+    this.musicInterval = null;
+    this.initialized = false;
+  }
+  init() {
+    if (this.initialized) return;
+    this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    this.initialized = true;
+  }
+  resume() {
+    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+  }
+  playShoot() {
+    if (!this.soundEnabled || !this.ctx) return;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(880, this.ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(220, this.ctx.currentTime + 0.1);
+    gain.gain.setValueAtTime(0.08, this.ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.1);
+    osc.connect(gain); gain.connect(this.ctx.destination);
+    osc.start(); osc.stop(this.ctx.currentTime + 0.1);
+  }
+  playExplosion() {
+    if (!this.soundEnabled || !this.ctx) return;
+    const bufferSize = this.ctx.sampleRate * 0.3;
+    const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufferSize, 2);
+    const noise = this.ctx.createBufferSource(); noise.buffer = buffer;
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.15, this.ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.3);
+    noise.connect(gain); gain.connect(this.ctx.destination);
+    noise.start();
+  }
+  playHit() {
+    if (!this.soundEnabled || !this.ctx) return;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(440, this.ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(110, this.ctx.currentTime + 0.15);
+    gain.gain.setValueAtTime(0.1, this.ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.15);
+    osc.connect(gain); gain.connect(this.ctx.destination);
+    osc.start(); osc.stop(this.ctx.currentTime + 0.15);
+  }
+  startMusic() {
+    if (!this.musicEnabled || !this.ctx || this.musicInterval) return;
+    const notes = [110, 110, 130.81, 130.81, 146.83, 146.83, 130.81, 110, 98, 98, 87.31, 87.31, 82.41, 82.41, 73.42, 73.42];
+    let noteIndex = 0;
+    this.musicGain = this.ctx.createGain();
+    this.musicGain.gain.value = 0.04;
+    this.musicGain.connect(this.ctx.destination);
+    const playNote = () => {
+      if (!this.musicInterval) return;
+      if (this.musicOsc) { try { this.musicOsc.stop(); } catch(e){} }
+      this.musicOsc = this.ctx.createOscillator();
+      this.musicOsc.type = 'triangle';
+      this.musicOsc.frequency.value = notes[noteIndex % notes.length];
+      this.musicOsc.connect(this.musicGain);
+      this.musicOsc.start();
+      noteIndex++;
+    };
+    playNote();
+    this.musicInterval = setInterval(playNote, 280);
+  }
+  stopMusic() {
+    if (this.musicInterval) { clearInterval(this.musicInterval); this.musicInterval = null; }
+    if (this.musicOsc) { try { this.musicOsc.stop(); } catch(e){} this.musicOsc = null; }
+  }
+}
+
+class Particle {
+  constructor(x, y, color, speed, life) {
+    this.x = x; this.y = y; this.color = color;
+    this.vx = (Math.random() - 0.5) * speed;
+    this.vy = (Math.random() - 0.5) * speed;
+    this.life = life; this.maxLife = life;
+    this.size = Math.random() * 3 + 1;
+  }
+  update() { this.x += this.vx; this.y += this.vy; this.life--; this.size *= 0.97; }
+  draw(ctx) {
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, this.life / this.maxLife);
+    ctx.shadowBlur = 10; ctx.shadowColor = this.color;
+    ctx.fillStyle = this.color;
+    ctx.beginPath(); ctx.arc(this.x, this.y, Math.max(0.5, this.size), 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+}
+
+class Star {
+  constructor(w, h) {
+    this.x = Math.random() * w; this.y = Math.random() * h;
+    this.size = Math.random() * 1.5 + 0.3;
+    this.speed = Math.random() * 0.4 + 0.05;
+    this.brightness = Math.random();
+    this.w = w;
+  }
+  update(h) {
+    this.y += this.speed;
+    if (this.y > h) { this.y = 0; this.x = Math.random() * this.w; }
+    this.brightness += (Math.random() - 0.5) * 0.08;
+    this.brightness = Math.max(0.2, Math.min(1, this.brightness));
+  }
+  draw(ctx) {
+    ctx.save();
+    ctx.globalAlpha = this.brightness * 0.7;
+    ctx.fillStyle = '#fff';
+    ctx.shadowBlur = 4; ctx.shadowColor = '#fff';
+    ctx.beginPath(); ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+}
+
+class Player {
+  constructor(x, y) {
+    this.x = x; this.y = y;
+    this.width = 40; this.height = 30;
+    this.speed = 6;
+    this.color = '#00ffff';
+    this.cooldown = 0;
+    this.lives = 3;
+    this.invincible = 0;
+  }
+  update(input, w) {
+    if (input.left) this.x -= this.speed;
+    if (input.right) this.x += this.speed;
+    this.x = Math.max(this.width/2, Math.min(w - this.width/2, this.x));
+    if (this.cooldown > 0) this.cooldown--;
+    if (this.invincible > 0) this.invincible--;
+  }
+  draw(ctx) {
+    if (this.invincible > 0 && Math.floor(this.invincible / 4) % 2 === 0) return;
+    ctx.save();
+    ctx.shadowBlur = 20; ctx.shadowColor = this.color;
+    ctx.fillStyle = this.color;
+    ctx.beginPath();
+    ctx.moveTo(this.x, this.y - this.height/2);
+    ctx.lineTo(this.x - this.width/2, this.y + this.height/2);
+    ctx.lineTo(this.x + this.width/2, this.y + this.height/2);
+    ctx.closePath(); ctx.fill();
+    ctx.shadowBlur = 30; ctx.shadowColor = '#0088ff';
+    ctx.fillStyle = '#0088ff';
+    ctx.beginPath();
+    ctx.moveTo(this.x - 6, this.y + this.height/2);
+    ctx.lineTo(this.x + 6, this.y + this.height/2);
+    ctx.lineTo(this.x, this.y + this.height/2 + 12);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+}
+
+class Bullet {
+  constructor(x, y, isEnemy = false) {
+    this.x = x; this.y = y;
+    this.speed = isEnemy ? 3 : 9;
+    this.isEnemy = isEnemy;
+    this.color = isEnemy ? '#ff0055' : '#39ff14';
+    this.width = 3; this.height = isEnemy ? 10 : 16;
+    this.active = true;
+  }
+  update(h) {
+    this.y += this.isEnemy ? this.speed : -this.speed;
+    if (this.y < -20 || this.y > h + 20) this.active = false;
+  }
+  draw(ctx) {
+    ctx.save();
+    ctx.shadowBlur = 12; ctx.shadowColor = this.color;
+    ctx.fillStyle = this.color;
+    ctx.fillRect(this.x - this.width/2, this.y - this.height/2, this.width, this.height);
+    ctx.restore();
+  }
+}
+
+class Enemy {
+  constructor(x, y, type) {
+    this.x = x; this.y = y;
+    this.type = type;
+    this.width = 32; this.height = 24;
+    this.active = true;
+    this.colors = ['#ff00ff', '#ffff00', '#ff4444'];
+    this.color = this.colors[type % 3];
+    this.score = (3 - type) * 10 + 10;
+    this.shootTimer = Math.random() * 300 + 150;
+  }
+  update(dx, dy) {
+    this.x += dx; this.y += dy;
+    this.shootTimer--;
+  }
+  draw(ctx) {
+    ctx.save();
+    ctx.shadowBlur = 15; ctx.shadowColor = this.color;
+    ctx.fillStyle = this.color;
+    if (this.type === 0) {
+      ctx.fillRect(this.x - this.width/2, this.y - this.height/2, this.width, this.height);
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1;
+      ctx.strokeRect(this.x - this.width/2, this.y - this.height/2, this.width, this.height);
+    } else if (this.type === 1) {
+      ctx.beginPath(); ctx.arc(this.x, this.y, this.width/2, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(this.x, this.y, this.width/2, 0, Math.PI * 2); ctx.stroke();
+    } else {
+      ctx.beginPath();
+      ctx.moveTo(this.x, this.y - this.height/2);
+      ctx.lineTo(this.x + this.width/2, this.y);
+      ctx.lineTo(this.x, this.y + this.height/2);
+      ctx.lineTo(this.x - this.width/2, this.y);
+      ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(this.x, this.y - this.height/2);
+      ctx.lineTo(this.x + this.width/2, this.y);
+      ctx.lineTo(this.x, this.y + this.height/2);
+      ctx.lineTo(this.x - this.width/2, this.y);
+      ctx.closePath(); ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+class VirtualJoystick {
+  constructor() {
+    this.active = false;
+    this.startX = 0; this.startY = 0;
+    this.currentX = 0; this.currentY = 0;
+    this.dx = 0;
+  }
+  handleTouchStart(x, y) {
+    this.active = true;
+    this.startX = x; this.startY = y;
+    this.currentX = x; this.currentY = y;
+    this.dx = 0;
+    return true;
+  }
+  handleTouchMove(x, y) {
+    if (!this.active) return;
+    this.currentX = x; this.currentY = y;
+    const maxDist = 50;
+    const dist = x - this.startX;
+    this.dx = Math.max(-1, Math.min(1, dist / maxDist));
+  }
+  handleTouchEnd() {
+    this.active = false; this.dx = 0;
+  }
+  draw(ctx) {
+    if (!this.active) return;
+    ctx.save();
+    ctx.globalAlpha = 0.4;
+    ctx.strokeStyle = '#00ffff'; ctx.lineWidth = 3;
+    ctx.shadowBlur = 10; ctx.shadowColor = '#00ffff';
+    ctx.beginPath(); ctx.arc(this.startX, this.startY, 50, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = '#00ffff';
+    ctx.beginPath(); ctx.arc(this.currentX, this.currentY, 18, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+}
+
+class ShootButton {
+  constructor() {
+    this.pressed = false;
+    this.x = 0; this.y = 0;
+  }
+  setPos(x, y) { this.x = x; this.y = y; }
+  handleTouchStart(x, y) {
+    const dx = x - this.x, dy = y - this.y;
+    if (Math.sqrt(dx*dx + dy*dy) < 60) { this.pressed = true; return true; }
+    return false;
+  }
+  handleTouchEnd() { this.pressed = false; }
+  draw(ctx) {
+    ctx.save();
+    ctx.globalAlpha = 0.3;
+    ctx.strokeStyle = '#39ff14'; ctx.lineWidth = 3;
+    ctx.shadowBlur = 15; ctx.shadowColor = '#39ff14';
+    ctx.beginPath(); ctx.arc(this.x, this.y, 50, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = this.pressed ? 'rgba(57,255,20,0.4)' : 'transparent';
+    ctx.fill();
+    ctx.fillStyle = '#39ff14';
+    ctx.font = 'bold 14px monospace';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.shadowBlur = 10; ctx.shadowColor = '#39ff14';
+    ctx.fillText('FIRE', this.x, this.y);
+    ctx.restore();
+  }
+}
+
+
+class Game {
+  constructor() {
+    this.canvas = document.getElementById('gameCanvas');
+    this.ctx = this.canvas.getContext('2d');
+    this.resize();
+    window.addEventListener('resize', () => this.resize());
+
+    this.audio = new AudioSystem();
+    this.joystick = new VirtualJoystick();
+    this.shootBtn = new ShootButton();
+
+    this.state = 'MENU';
+    this.lang = localStorage.getItem('neon_lang') || 'en';
+    this.soundOn = localStorage.getItem('neon_sound') !== 'false';
+    this.musicOn = localStorage.getItem('neon_music') !== 'false';
+    this.audio.soundEnabled = this.soundOn;
+    this.audio.musicEnabled = this.musicOn;
+
+    this.score = 0;
+    this.highScore = parseInt(localStorage.getItem('neon_high')) || 0;
+    this.level = 1;
+
+    this.player = null;
+    this.bullets = [];
+    this.enemyBullets = [];
+    this.enemies = [];
+    this.particles = [];
+    this.stars = [];
+    for (let i = 0; i < 100; i++) this.stars.push(new Star(this.canvas.width, this.canvas.height));
+
+    this.enemyDir = 1;
+    this.enemySpeed = 0.5;
+    this.enemyDrop = 25;
+
+    this.menuSelection = 0;
+    this.settingsSelection = 0;
+    this.pauseSelection = 0;
+
+    this.swipeStartX = null;
+    this.input = { left: false, right: false, shoot: false };
+
+    this.setupInput();
+    this.lastTime = 0;
+    this.loop = this.loop.bind(this);
+    requestAnimationFrame(this.loop);
+  }
+
+  resize() {
+    this.canvas.width = window.innerWidth;
+    this.canvas.height = window.innerHeight;
+    this.shootBtn.setPos(this.canvas.width - 80, this.canvas.height - 100);
+  }
+
+  t(key) {
+    return i18n[this.lang][key] || key;
+  }
+
+  startGame() {
+    this.audio.init();
+    this.audio.resume();
+    this.player = new Player(this.canvas.width / 2, this.canvas.height - 90);
+    this.bullets = [];
+    this.enemyBullets = [];
+    this.enemies = [];
+    this.particles = [];
+    this.score = 0;
+    this.level = 1;
+    this.spawnEnemies();
+    this.state = 'PLAYING';
+    this.audio.startMusic();
+  }
+
+  spawnEnemies() {
+    const rows = Math.min(3 + Math.floor(this.level / 2), 6);
+    const cols = Math.min(5 + Math.floor(this.level / 2), 10);
+    const spacing = 48;
+    const startX = this.canvas.width / 2 - (cols * spacing) / 2 + spacing / 2;
+    const startY = 70;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        this.enemies.push(new Enemy(startX + c * spacing, startY + r * 36, r % 3));
+      }
+    }
+    this.enemySpeed = 0.4 + this.level * 0.12;
+  }
+
+  setupInput() {
+    window.addEventListener('keydown', e => {
+      if (e.code === 'ArrowLeft' || e.code === 'KeyA') this.input.left = true;
+      if (e.code === 'ArrowRight' || e.code === 'KeyD') this.input.right = true;
+      if (e.code === 'Space' || e.code === 'Enter') {
+        this.input.shoot = true;
+        if (this.state === 'MENU') this.handleMenuSelect();
+        else if (this.state === 'PAUSED') this.handlePauseSelect();
+        else if (this.state === 'GAMEOVER') this.startGame();
+        else if (this.state === 'SETTINGS' || this.state === 'SETTINGS_PAUSE') this.handleSettingsSelect();
+      }
+      if (e.code === 'Escape' || e.code === 'KeyP') {
+        if (this.state === 'PLAYING') { this.state = 'PAUSED'; this.audio.stopMusic(); }
+        else if (this.state === 'PAUSED') { this.state = 'PLAYING'; this.audio.startMusic(); }
+        else if (this.state === 'SETTINGS') this.state = 'MENU';
+        else if (this.state === 'SETTINGS_PAUSE') this.state = 'PAUSED';
+      }
+      if (e.code === 'ArrowUp' || e.code === 'KeyW') this.navigateUp();
+      if (e.code === 'ArrowDown' || e.code === 'KeyS') this.navigateDown();
+    });
+
+    window.addEventListener('keyup', e => {
+      if (e.code === 'ArrowLeft' || e.code === 'KeyA') this.input.left = false;
+      if (e.code === 'ArrowRight' || e.code === 'KeyD') this.input.right = false;
+      if (e.code === 'Space' || e.code === 'Enter') this.input.shoot = false;
+    });
+
+    this.canvas.addEventListener('touchstart', e => {
+      e.preventDefault();
+      for (let t of e.changedTouches) {
+        const x = t.clientX, y = t.clientY;
+        if (this.state === 'PLAYING') {
+          if (x > this.canvas.width - 70 && y < 70) {
+            this.state = 'PAUSED'; this.audio.stopMusic(); continue;
+          }
+          const leftZone = x < this.canvas.width * 0.35;
+          const rightZone = x > this.canvas.width * 0.65;
+          if (leftZone) {
+            this.joystick.handleTouchStart(x, y);
+          } else if (rightZone) {
+            if (!this.shootBtn.handleTouchStart(x, y)) {
+              this.swipeStartX = x; this.swipeStartY = y;
+            }
+          } else {
+            this.swipeStartX = x; this.swipeStartY = y;
+          }
+        } else {
+          this.handleTouchMenu(x, y);
+        }
+      }
+    }, {passive: false});
+
+    this.canvas.addEventListener('touchmove', e => {
+      e.preventDefault();
+      for (let t of e.changedTouches) {
+        this.joystick.handleTouchMove(t.clientX, t.clientY);
+        if (this.swipeStartX !== null && this.state === 'PLAYING') {
+          const dx = t.clientX - this.swipeStartX;
+          if (Math.abs(dx) > 10) {
+            this.input.left = dx < 0; this.input.right = dx > 0;
+          }
+        }
+      }
+    }, {passive: false});
+
+    this.canvas.addEventListener('touchend', e => {
+      e.preventDefault();
+      this.joystick.handleTouchEnd();
+      this.shootBtn.handleTouchEnd();
+      this.swipeStartX = null;
+      if (!this.input.left && !this.input.right) {
+        this.input.left = false; this.input.right = false;
+      }
+    }, {passive: false});
+
+    this.canvas.addEventListener('mousedown', e => {
+      if (this.state === 'PLAYING') {
+        if (e.clientX > this.canvas.width - 70 && e.clientY < 70) {
+          this.state = 'PAUSED'; this.audio.stopMusic();
+        }
+      } else {
+        this.handleTouchMenu(e.clientX, e.clientY);
+      }
+    });
+  }
+
+  navigateUp() {
+    if (this.state === 'MENU') this.menuSelection = Math.max(0, this.menuSelection - 1);
+    else if (this.state === 'PAUSED') this.pauseSelection = Math.max(0, this.pauseSelection - 1);
+    else if (this.state === 'SETTINGS' || this.state === 'SETTINGS_PAUSE') this.settingsSelection = Math.max(0, this.settingsSelection - 1);
+  }
+
+  navigateDown() {
+    if (this.state === 'MENU') this.menuSelection = Math.min(1, this.menuSelection + 1);
+    else if (this.state === 'PAUSED') this.pauseSelection = Math.min(2, this.pauseSelection + 1);
+    else if (this.state === 'SETTINGS' || this.state === 'SETTINGS_PAUSE') this.settingsSelection = Math.min(3, this.settingsSelection + 1);
+  }
+
+  handleMenuSelect() {
+    if (this.menuSelection === 0) this.startGame();
+    else if (this.menuSelection === 1) { this.settingsSelection = 0; this.state = 'SETTINGS'; }
+  }
+
+  handlePauseSelect() {
+    if (this.pauseSelection === 0) { this.state = 'PLAYING'; this.audio.startMusic(); }
+    else if (this.pauseSelection === 1) { this.settingsSelection = 0; this.state = 'SETTINGS_PAUSE'; }
+    else if (this.pauseSelection === 2) { this.state = 'MENU'; this.audio.stopMusic(); }
+  }
+
+  handleSettingsSelect() {
+    if (this.settingsSelection === 0) {
+      this.soundOn = !this.soundOn;
+      this.audio.soundEnabled = this.soundOn;
+      localStorage.setItem('neon_sound', this.soundOn);
+    } else if (this.settingsSelection === 1) {
+      this.musicOn = !this.musicOn;
+      this.audio.musicEnabled = this.musicOn;
+      localStorage.setItem('neon_music', this.musicOn);
+      if (this.musicOn && this.state !== 'MENU' && this.state !== 'SETTINGS') this.audio.startMusic();
+      else this.audio.stopMusic();
+    } else if (this.settingsSelection === 2) {
+      const langs = ['en', 'de', 'ru'];
+      const idx = langs.indexOf(this.lang);
+      this.lang = langs[(idx + 1) % langs.length];
+      localStorage.setItem('neon_lang', this.lang);
+    } else if (this.settingsSelection === 3) {
+      if (this.state === 'SETTINGS') this.state = 'MENU';
+      else if (this.state === 'SETTINGS_PAUSE') this.state = 'PAUSED';
+    }
+  }
+
+  handleTouchMenu(x, y) {
+    const cx = this.canvas.width / 2;
+    const cy = this.canvas.height / 2;
+
+    if (this.state === 'MENU') {
+      if (y > cy - 45 && y < cy + 5) { this.startGame(); }
+      else if (y > cy + 25 && y < cy + 75) { this.settingsSelection = 0; this.state = 'SETTINGS'; }
+    } else if (this.state === 'PAUSED') {
+      const items = [this.t('resume'), this.t('settings'), this.t('restart')];
+      const startY = cy - 20;
+      for (let i = 0; i < items.length; i++) {
+        if (y > startY + i * 70 - 25 && y < startY + i * 70 + 25) {
+          this.pauseSelection = i; this.handlePauseSelect();
+        }
+      }
+    } else if (this.state === 'SETTINGS' || this.state === 'SETTINGS_PAUSE') {
+      const items = [this.t('sound'), this.t('music'), this.t('language'), this.t('back')];
+      const startY = cy - 40;
+      for (let i = 0; i < items.length; i++) {
+        if (y > startY + i * 60 - 22 && y < startY + i * 60 + 22) {
+          this.settingsSelection = i; this.handleSettingsSelect();
+        }
+      }
+    } else if (this.state === 'GAMEOVER') {
+      if (y > cy + 55 && y < cy + 105) this.startGame();
+      else if (y > cy + 125 && y < cy + 175) { this.state = 'MENU'; this.audio.stopMusic(); }
+    }
+  }
+
+  createExplosion(x, y, color, count = 15) {
+    for (let i = 0; i < count; i++) {
+      this.particles.push(new Particle(x, y, color, 5, 30 + Math.random() * 20));
+    }
+  }
+
+  update() {
+    for (let s of this.stars) s.update(this.canvas.height);
+
+    if (this.state === 'PLAYING') {
+      const moveLeft = this.input.left || (this.joystick.active && this.joystick.dx < -0.2);
+      const moveRight = this.input.right || (this.joystick.active && this.joystick.dx > 0.2);
+      const shoot = this.input.shoot || this.shootBtn.pressed;
+
+      this.player.update({left: moveLeft, right: moveRight}, this.canvas.width);
+
+      if (shoot && this.player.cooldown <= 0) {
+        this.bullets.push(new Bullet(this.player.x, this.player.y - 20));
+        this.player.cooldown = 12;
+        this.audio.playShoot();
+      }
+
+      for (let b of this.bullets) b.update(this.canvas.height);
+      for (let b of this.enemyBullets) b.update(this.canvas.height);
+      this.bullets = this.bullets.filter(b => b.active);
+      this.enemyBullets = this.enemyBullets.filter(b => b.active);
+
+      let edge = false;
+      for (let e of this.enemies) {
+        e.update(this.enemyDir * this.enemySpeed, 0);
+        if (e.x < 25 || e.x > this.canvas.width - 25) edge = true;
+        if (e.shootTimer <= 0 && Math.random() < 0.008 * this.level) {
+          this.enemyBullets.push(new Bullet(e.x, e.y + 15, true));
+          e.shootTimer = Math.random() * 250 + 150;
+        }
+      }
+
+      if (edge) {
+        this.enemyDir *= -1;
+        for (let e of this.enemies) e.y += this.enemyDrop;
+      }
+
+      for (let b of this.bullets) {
+        for (let e of this.enemies) {
+          if (!e.active || !b.active) continue;
+          if (Math.abs(b.x - e.x) < e.width/2 + b.width/2 + 2 && Math.abs(b.y - e.y) < e.height/2 + b.height/2 + 2) {
+            b.active = false; e.active = false;
+            this.score += e.score;
+            this.createExplosion(e.x, e.y, e.color);
+            this.audio.playExplosion();
+          }
+        }
+      }
+
+      if (this.player.invincible <= 0) {
+        for (let b of this.enemyBullets) {
+          if (!b.active) continue;
+          if (Math.abs(b.x - this.player.x) < this.player.width/2 + b.width/2 + 2 && 
+              Math.abs(b.y - this.player.y) < this.player.height/2 + b.height/2 + 2) {
+            b.active = false;
+            this.player.lives--;
+            this.player.invincible = 90;
+            this.createExplosion(this.player.x, this.player.y, '#00ffff', 25);
+            this.audio.playHit();
+            if (this.player.lives <= 0) {
+              this.state = 'GAMEOVER';
+              if (this.score > this.highScore) {
+                this.highScore = this.score;
+                localStorage.setItem('neon_high', this.highScore);
+              }
+              this.audio.stopMusic();
+            }
+          }
+        }
+      }
+
+      for (let e of this.enemies) {
+        if (e.y > this.canvas.height - 60) {
+          this.state = 'GAMEOVER';
+          if (this.score > this.highScore) {
+            this.highScore = this.score;
+            localStorage.setItem('neon_high', this.highScore);
+          }
+          this.audio.stopMusic();
+        }
+      }
+
+      this.enemies = this.enemies.filter(e => e.active);
+
+      if (this.enemies.length === 0) {
+        this.level++;
+        this.spawnEnemies();
+        this.player.invincible = 60;
+      }
+
+      for (let p of this.particles) p.update();
+      this.particles = this.particles.filter(p => p.life > 0);
+    }
+  }
+
+
+  drawButton(ctx, x, y, w, h, text, selected) {
+    ctx.save();
+    ctx.strokeStyle = selected ? '#00ffff' : '#444';
+    ctx.lineWidth = selected ? 3 : 2;
+    ctx.shadowBlur = selected ? 20 : 0;
+    ctx.shadowColor = '#00ffff';
+    ctx.strokeRect(x - w/2, y - h/2, w, h);
+    ctx.fillStyle = selected ? '#00ffff' : '#888';
+    ctx.font = `bold ${selected ? 22 : 20}px monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.shadowBlur = selected ? 15 : 0;
+    ctx.fillText(text, x, y);
+    ctx.restore();
+  }
+
+  draw() {
+    const ctx = this.ctx;
+    const W = this.canvas.width, H = this.canvas.height;
+
+    ctx.fillStyle = '#050510';
+    ctx.fillRect(0, 0, W, H);
+
+    for (let s of this.stars) s.draw(ctx);
+
+    if (this.state === 'PLAYING' || this.state === 'PAUSED') {
+      this.player.draw(ctx);
+      for (let b of this.bullets) b.draw(ctx);
+      for (let b of this.enemyBullets) b.draw(ctx);
+      for (let e of this.enemies) e.draw(ctx);
+      for (let p of this.particles) p.draw(ctx);
+
+      ctx.save();
+      ctx.fillStyle = '#00ffff';
+      ctx.font = 'bold 18px monospace';
+      ctx.textAlign = 'left';
+      ctx.shadowBlur = 10; ctx.shadowColor = '#00ffff';
+      ctx.fillText(`${this.t('score')}: ${this.score}`, 20, 40);
+      ctx.fillText(`${this.t('lives')}: ${this.player.lives}`, 20, 65);
+      ctx.fillText(`${this.t('level')}: ${this.level}`, 20, 90);
+
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 24px monospace';
+      ctx.shadowBlur = 8; ctx.shadowColor = '#ffffff';
+      ctx.fillText('⏸', W - 25, 40);
+      ctx.restore();
+
+      this.joystick.draw(ctx);
+      this.shootBtn.draw(ctx);
+    }
+
+    if (this.state === 'MENU') this.drawMenu(ctx);
+    else if (this.state === 'SETTINGS' || this.state === 'SETTINGS_PAUSE') this.drawSettings(ctx);
+    else if (this.state === 'PAUSED') this.drawPause(ctx);
+    else if (this.state === 'GAMEOVER') this.drawGameOver(ctx);
+  }
+
+  drawMenu(ctx) {
+    const cx = this.canvas.width / 2;
+    const cy = this.canvas.height / 2;
+
+    ctx.save();
+    ctx.font = 'bold 52px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#00ffff';
+    ctx.shadowBlur = 35; ctx.shadowColor = '#00ffff';
+    ctx.fillText('NEON INVADERS', cx, cy - 140);
+
+    ctx.font = '14px monospace';
+    ctx.fillStyle = '#ff00ff';
+    ctx.shadowBlur = 15; ctx.shadowColor = '#ff00ff';
+    ctx.fillText('◄ DEFEND THE GALAXY ►', cx, cy - 95);
+    ctx.restore();
+
+    const items = [this.t('start'), this.t('settings')];
+    for (let i = 0; i < items.length; i++) {
+      const y = cy - 20 + i * 70;
+      this.drawButton(ctx, cx, y, 240, 55, items[i], this.menuSelection === i);
+    }
+
+    ctx.save();
+    ctx.font = '18px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ffff00';
+    ctx.shadowBlur = 10; ctx.shadowColor = '#ffff00';
+    ctx.fillText(`${this.t('highScore')}: ${this.highScore}`, cx, cy + 140);
+    ctx.font = '12px monospace';
+    ctx.fillStyle = '#666';
+    ctx.shadowBlur = 0;
+    ctx.fillText('ARROWS / A-D: Move   SPACE: Shoot   P: Pause', cx, cy + 180);
+    ctx.restore();
+  }
+
+  drawSettings(ctx) {
+    const cx = this.canvas.width / 2;
+    const cy = this.canvas.height / 2;
+
+    ctx.save();
+    ctx.font = 'bold 38px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#00ffff';
+    ctx.shadowBlur = 25; ctx.shadowColor = '#00ffff';
+    ctx.fillText(this.t('settings'), cx, cy - 150);
+    ctx.restore();
+
+    const items = [
+      `${this.t('sound')}: ${this.soundOn ? 'ON' : 'OFF'}`,
+      `${this.t('music')}: ${this.musicOn ? 'ON' : 'OFF'}`,
+      `${this.t('language')}: ${this.lang.toUpperCase()}`,
+      this.t('back')
+    ];
+
+    for (let i = 0; i < items.length; i++) {
+      const y = cy - 50 + i * 65;
+      this.drawButton(ctx, cx, y, 300, 50, items[i], this.settingsSelection === i);
+    }
+  }
+
+  drawPause(ctx) {
+    const cx = this.canvas.width / 2;
+    const cy = this.canvas.height / 2;
+
+    ctx.fillStyle = 'rgba(0,0,0,0.65)';
+    ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+    ctx.save();
+    ctx.font = 'bold 46px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ff00ff';
+    ctx.shadowBlur = 30; ctx.shadowColor = '#ff00ff';
+    ctx.fillText(this.t('pause'), cx, cy - 110);
+    ctx.restore();
+
+    const items = [this.t('resume'), this.t('settings'), this.t('restart')];
+    for (let i = 0; i < items.length; i++) {
+      const y = cy - 20 + i * 70;
+      this.drawButton(ctx, cx, y, 260, 55, items[i], this.pauseSelection === i);
+    }
+  }
+
+  drawGameOver(ctx) {
+    const cx = this.canvas.width / 2;
+    const cy = this.canvas.height / 2;
+
+    ctx.fillStyle = 'rgba(0,0,0,0.8)';
+    ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+    ctx.save();
+    ctx.font = 'bold 48px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ff0055';
+    ctx.shadowBlur = 35; ctx.shadowColor = '#ff0055';
+    ctx.fillText(this.t('gameOver'), cx, cy - 100);
+
+    ctx.font = '24px monospace';
+    ctx.fillStyle = '#ffffff';
+    ctx.shadowBlur = 12; ctx.shadowColor = '#ffffff';
+    ctx.fillText(`${this.t('score')}: ${this.score}`, cx, cy - 30);
+    ctx.fillText(`${this.t('highScore')}: ${this.highScore}`, cx, cy + 10);
+
+    if (this.score >= this.highScore && this.score > 0) {
+      ctx.fillStyle = '#ffff00';
+      ctx.shadowBlur = 20; ctx.shadowColor = '#ffff00';
+      ctx.font = '18px monospace';
+      ctx.fillText('★ NEW RECORD! ★', cx, cy + 45);
+    }
+    ctx.restore();
+
+    this.drawButton(ctx, cx, cy + 90, 240, 55, this.t('restart'), true);
+    this.drawButton(ctx, cx, cy + 165, 240, 55, this.t('back'), false);
+  }
+
+  loop(timestamp) {
+    this.lastTime = timestamp;
+    this.update();
+    this.draw();
+    requestAnimationFrame(this.loop);
+  }
+}
+
+window.onload = () => new Game();
+</script>
+</body>
+</html>
