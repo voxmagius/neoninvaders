@@ -16,9 +16,9 @@ canvas { display: block; position: fixed; top: 0; left: 0; width: 100%; height: 
 <canvas id="gameCanvas"></canvas>
 <script>
 const i18n = {
-  en: { start: 'START', settings: 'SETTINGS', sound: 'Sound', music: 'Music', language: 'Language', resume: 'RESUME', restart: 'RESTART', gameOver: 'GAME OVER', score: 'Score', highScore: 'Best', pause: 'PAUSE', back: 'BACK', lives: 'Lives', level: 'Level' },
-  de: { start: 'START', settings: 'EINSTELLUNGEN', sound: 'Sound', music: 'Musik', language: 'Sprache', resume: 'FORTSETZEN', restart: 'NEUSTART', gameOver: 'SPIEL VORBEI', score: 'Punkte', highScore: 'Rekord', pause: 'PAUSE', back: 'ZURÜCK', lives: 'Leben', level: 'Level' },
-  ru: { start: 'СТАРТ', settings: 'НАСТРОЙКИ', sound: 'Звук', music: 'Музыка', language: 'Язык', resume: 'ПРОДОЛЖИТЬ', restart: 'ЗАНОВО', gameOver: 'ИГРА ОКОНЧЕНА', score: 'Очки', highScore: 'Рекорд', pause: 'ПАУЗА', back: 'НАЗАД', lives: 'Жизни', level: 'Уровень' }
+  en: { start: 'START', settings: 'SETTINGS', sound: 'Sound', music: 'Music', language: 'Language', autoFire: 'Auto Fire', resume: 'RESUME', restart: 'RESTART', gameOver: 'GAME OVER', score: 'Score', highScore: 'Best', pause: 'PAUSE', back: 'BACK', lives: 'Lives', level: 'Level' },
+  de: { start: 'START', settings: 'EINSTELLUNGEN', sound: 'Sound', music: 'Musik', language: 'Sprache', autoFire: 'Autofeuer', resume: 'FORTSETZEN', restart: 'NEUSTART', gameOver: 'SPIEL VORBEI', score: 'Punkte', highScore: 'Rekord', pause: 'PAUSE', back: 'ZURÜCK', lives: 'Leben', level: 'Level' },
+  ru: { start: 'СТАРТ', settings: 'НАСТРОЙКИ', sound: 'Звук', music: 'Музыка', language: 'Язык', autoFire: 'Автоогонь', resume: 'ПРОДОЛЖИТЬ', restart: 'ЗАНОВО', gameOver: 'ИГРА ОКОНЧЕНА', score: 'Очки', highScore: 'Рекорд', pause: 'ПАУЗА', back: 'НАЗАД', lives: 'Жизни', level: 'Уровень' }
 };
 
 class AudioSystem {
@@ -257,23 +257,24 @@ class VirtualJoystick {
     this.startX = 0; this.startY = 0;
     this.currentX = 0; this.currentY = 0;
     this.dx = 0;
+    this.touchId = null;
   }
-  handleTouchStart(x, y) {
-    this.active = true;
+  start(id, x, y) {
+    this.active = true; this.touchId = id;
     this.startX = x; this.startY = y;
     this.currentX = x; this.currentY = y;
     this.dx = 0;
-    return true;
   }
-  handleTouchMove(x, y) {
-    if (!this.active) return;
+  move(id, x, y) {
+    if (!this.active || this.touchId !== id) return;
     this.currentX = x; this.currentY = y;
     const maxDist = 50;
     const dist = x - this.startX;
     this.dx = Math.max(-1, Math.min(1, dist / maxDist));
   }
-  handleTouchEnd() {
-    this.active = false; this.dx = 0;
+  end(id) {
+    if (this.touchId !== id) return;
+    this.active = false; this.dx = 0; this.touchId = null;
   }
   draw(ctx) {
     if (!this.active) return;
@@ -292,14 +293,21 @@ class ShootButton {
   constructor() {
     this.pressed = false;
     this.x = 0; this.y = 0;
+    this.touchId = null;
   }
   setPos(x, y) { this.x = x; this.y = y; }
-  handleTouchStart(x, y) {
+  start(id, x, y) {
     const dx = x - this.x, dy = y - this.y;
-    if (Math.sqrt(dx*dx + dy*dy) < 60) { this.pressed = true; return true; }
+    if (Math.sqrt(dx*dx + dy*dy) < 60) {
+      this.pressed = true; this.touchId = id;
+      return true;
+    }
     return false;
   }
-  handleTouchEnd() { this.pressed = false; }
+  end(id) {
+    if (this.touchId !== id) return;
+    this.pressed = false; this.touchId = null;
+  }
   draw(ctx) {
     ctx.save();
     ctx.globalAlpha = 0.3;
@@ -317,24 +325,22 @@ class ShootButton {
   }
 }
 
-
 class Game {
   constructor() {
-    try {
     this.canvas = document.getElementById('gameCanvas');
     this.ctx = this.canvas.getContext('2d');
+    this.resize();
+    window.addEventListener('resize', () => this.resize());
 
     this.audio = new AudioSystem();
     this.joystick = new VirtualJoystick();
     this.shootBtn = new ShootButton();
 
-    this.resize();
-    window.addEventListener('resize', () => this.resize());
-
     this.state = 'MENU';
     this.lang = localStorage.getItem('neon_lang') || 'en';
     this.soundOn = localStorage.getItem('neon_sound') !== 'false';
     this.musicOn = localStorage.getItem('neon_music') !== 'false';
+    this.autoFireOn = localStorage.getItem('neon_autofire') === 'true';
     this.audio.soundEnabled = this.soundOn;
     this.audio.musicEnabled = this.musicOn;
 
@@ -358,20 +364,18 @@ class Game {
     this.settingsSelection = 0;
     this.pauseSelection = 0;
 
-    this.swipeStartX = null;
     this.input = { left: false, right: false, shoot: false };
 
     this.setupInput();
     this.lastTime = 0;
     this.loop = this.loop.bind(this);
     requestAnimationFrame(this.loop);
-    } catch(e) { console.error('Game init error:', e); document.body.innerHTML = '<div style="color:#f00;padding:20px;">Error: ' + e.message + '</div>'; }
   }
 
   resize() {
     this.canvas.width = window.innerWidth;
     this.canvas.height = window.innerHeight;
-    if (this.shootBtn) this.shootBtn.setPos(this.canvas.width - 80, this.canvas.height - 100);
+    this.shootBtn.setPos(this.canvas.width - 80, this.canvas.height - 100);
   }
 
   t(key) {
@@ -434,24 +438,26 @@ class Game {
       if (e.code === 'Space' || e.code === 'Enter') this.input.shoot = false;
     });
 
+    // Touch handling with proper multi-touch tracking
     this.canvas.addEventListener('touchstart', e => {
       e.preventDefault();
       for (let t of e.changedTouches) {
-        const x = t.clientX, y = t.clientY;
+        const x = t.clientX, y = t.clientY, id = t.identifier;
         if (this.state === 'PLAYING') {
           if (x > this.canvas.width - 70 && y < 70) {
             this.state = 'PAUSED'; this.audio.stopMusic(); continue;
           }
           const leftZone = x < this.canvas.width * 0.35;
           const rightZone = x > this.canvas.width * 0.65;
-          if (leftZone) {
-            this.joystick.handleTouchStart(x, y);
+          if (leftZone && !this.joystick.active) {
+            this.joystick.start(id, x, y);
           } else if (rightZone) {
-            if (!this.shootBtn.handleTouchStart(x, y)) {
-              this.swipeStartX = x; this.swipeStartY = y;
+            if (!this.shootBtn.start(id, x, y)) {
+              // Fallback: treat as swipe if outside button radius
+              if (!this.joystick.active) this.joystick.start(id, x, y);
             }
           } else {
-            this.swipeStartX = x; this.swipeStartY = y;
+            if (!this.joystick.active) this.joystick.start(id, x, y);
           }
         } else {
           this.handleTouchMenu(x, y);
@@ -462,23 +468,25 @@ class Game {
     this.canvas.addEventListener('touchmove', e => {
       e.preventDefault();
       for (let t of e.changedTouches) {
-        this.joystick.handleTouchMove(t.clientX, t.clientY);
-        if (this.swipeStartX !== null && this.state === 'PLAYING') {
-          const dx = t.clientX - this.swipeStartX;
-          if (Math.abs(dx) > 10) {
-            this.input.left = dx < 0; this.input.right = dx > 0;
-          }
-        }
+        this.joystick.move(t.identifier, t.clientX, t.clientY);
       }
     }, {passive: false});
 
     this.canvas.addEventListener('touchend', e => {
       e.preventDefault();
-      this.joystick.handleTouchEnd();
-      this.shootBtn.handleTouchEnd();
-      this.swipeStartX = null;
-      if (!this.input.left && !this.input.right) {
-        this.input.left = false; this.input.right = false;
+      for (let t of e.changedTouches) {
+        const id = t.identifier;
+        this.joystick.end(id);
+        this.shootBtn.end(id);
+      }
+    }, {passive: false});
+
+    this.canvas.addEventListener('touchcancel', e => {
+      e.preventDefault();
+      for (let t of e.changedTouches) {
+        const id = t.identifier;
+        this.joystick.end(id);
+        this.shootBtn.end(id);
       }
     }, {passive: false});
 
@@ -502,7 +510,7 @@ class Game {
   navigateDown() {
     if (this.state === 'MENU') this.menuSelection = Math.min(1, this.menuSelection + 1);
     else if (this.state === 'PAUSED') this.pauseSelection = Math.min(2, this.pauseSelection + 1);
-    else if (this.state === 'SETTINGS' || this.state === 'SETTINGS_PAUSE') this.settingsSelection = Math.min(3, this.settingsSelection + 1);
+    else if (this.state === 'SETTINGS' || this.state === 'SETTINGS_PAUSE') this.settingsSelection = Math.min(4, this.settingsSelection + 1);
   }
 
   handleMenuSelect() {
@@ -528,11 +536,14 @@ class Game {
       if (this.musicOn && this.state !== 'MENU' && this.state !== 'SETTINGS') this.audio.startMusic();
       else this.audio.stopMusic();
     } else if (this.settingsSelection === 2) {
+      this.autoFireOn = !this.autoFireOn;
+      localStorage.setItem('neon_autofire', this.autoFireOn);
+    } else if (this.settingsSelection === 3) {
       const langs = ['en', 'de', 'ru'];
       const idx = langs.indexOf(this.lang);
       this.lang = langs[(idx + 1) % langs.length];
       localStorage.setItem('neon_lang', this.lang);
-    } else if (this.settingsSelection === 3) {
+    } else if (this.settingsSelection === 4) {
       if (this.state === 'SETTINGS') this.state = 'MENU';
       else if (this.state === 'SETTINGS_PAUSE') this.state = 'PAUSED';
     }
@@ -554,7 +565,7 @@ class Game {
         }
       }
     } else if (this.state === 'SETTINGS' || this.state === 'SETTINGS_PAUSE') {
-      const items = [this.t('sound'), this.t('music'), this.t('language'), this.t('back')];
+      const items = [this.t('sound'), this.t('music'), this.t('autoFire'), this.t('language'), this.t('back')];
       const startY = cy - 40;
       for (let i = 0; i < items.length; i++) {
         if (y > startY + i * 60 - 22 && y < startY + i * 60 + 22) {
@@ -579,7 +590,7 @@ class Game {
     if (this.state === 'PLAYING') {
       const moveLeft = this.input.left || (this.joystick.active && this.joystick.dx < -0.2);
       const moveRight = this.input.right || (this.joystick.active && this.joystick.dx > 0.2);
-      const shoot = this.input.shoot || this.shootBtn.pressed;
+      const shoot = this.input.shoot || this.shootBtn.pressed || this.autoFireOn;
 
       this.player.update({left: moveLeft, right: moveRight}, this.canvas.width);
 
@@ -624,7 +635,7 @@ class Game {
       if (this.player.invincible <= 0) {
         for (let b of this.enemyBullets) {
           if (!b.active) continue;
-          if (Math.abs(b.x - this.player.x) < this.player.width/2 + b.width/2 + 2 && 
+          if (Math.abs(b.x - this.player.x) < this.player.width/2 + b.width/2 + 2 &&
               Math.abs(b.y - this.player.y) < this.player.height/2 + b.height/2 + 2) {
             b.active = false;
             this.player.lives--;
@@ -666,7 +677,6 @@ class Game {
       this.particles = this.particles.filter(p => p.life > 0);
     }
   }
-
 
   drawButton(ctx, x, y, w, h, text, selected) {
     ctx.save();
@@ -717,7 +727,7 @@ class Game {
       ctx.restore();
 
       this.joystick.draw(ctx);
-      this.shootBtn.draw(ctx);
+      if (!this.autoFireOn) this.shootBtn.draw(ctx);
     }
 
     if (this.state === 'MENU') this.drawMenu(ctx);
@@ -777,12 +787,13 @@ class Game {
     const items = [
       `${this.t('sound')}: ${this.soundOn ? 'ON' : 'OFF'}`,
       `${this.t('music')}: ${this.musicOn ? 'ON' : 'OFF'}`,
+      `${this.t('autoFire')}: ${this.autoFireOn ? 'ON' : 'OFF'}`,
       `${this.t('language')}: ${this.lang.toUpperCase()}`,
       this.t('back')
     ];
 
     for (let i = 0; i < items.length; i++) {
-      const y = cy - 50 + i * 65;
+      const y = cy - 50 + i * 60;
       this.drawButton(ctx, cx, y, 300, 50, items[i], this.settingsSelection === i);
     }
   }
